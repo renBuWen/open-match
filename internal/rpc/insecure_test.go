@@ -20,37 +20,35 @@ import (
 	"testing"
 	"time"
 
-	"open-match.dev/open-match/internal/pb"
+	"open-match.dev/open-match/pkg/pb"
 
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	shellTesting "open-match.dev/open-match/internal/testing"
-	netlistenerTesting "open-match.dev/open-match/internal/util/netlistener/testing"
 )
 
 func TestInsecureStartStop(t *testing.T) {
-	assert := assert.New(t)
-	grpcLh := netlistenerTesting.MustListen()
-	httpLh := netlistenerTesting.MustListen()
+	require := require.New(t)
+	grpcL := MustListen()
+	httpL := MustListen()
 	ff := &shellTesting.FakeFrontend{}
 
-	params := NewServerParamsFromListeners(grpcLh, httpLh)
+	params := NewServerParamsFromListeners(grpcL, httpL)
 	params.AddHandleFunc(func(s *grpc.Server) {
-		pb.RegisterFrontendServer(s, ff)
-	}, pb.RegisterFrontendHandlerFromEndpoint)
-	s := newInsecureServer(grpcLh, httpLh)
+		pb.RegisterFrontendServiceServer(s, ff)
+	}, pb.RegisterFrontendServiceHandlerFromEndpoint)
+	s := newInsecureServer(grpcL, httpL)
 	defer s.stop()
-	waitForStart, err := s.start(params)
-	assert.Nil(err)
-	waitForStart()
+	err := s.start(params)
+	require.Nil(err)
 
-	conn, err := grpc.Dial(fmt.Sprintf(":%d", grpcLh.Number()), grpc.WithInsecure())
-	assert.Nil(err)
+	conn, err := grpc.Dial(fmt.Sprintf(":%s", MustGetPortNumber(grpcL)), grpc.WithInsecure())
+	require.Nil(err)
 	defer conn.Close()
 
-	endpoint := fmt.Sprintf("http://localhost:%d", httpLh.Number())
+	endpoint := fmt.Sprintf("http://localhost:%s", MustGetPortNumber(httpL))
 	httpClient := &http.Client{
 		Timeout: time.Second,
 	}
-	runGrpcWithProxyTests(assert, s, conn, httpClient, endpoint)
+	runGrpcWithProxyTests(t, require, s, conn, httpClient, endpoint)
 }

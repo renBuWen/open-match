@@ -12,67 +12,46 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package evaluator provides the Evaluator service for Open Match golang harness.
 package evaluator
 
 import (
-	"github.com/sirupsen/logrus"
+	"go.opencensus.io/stats"
+	"go.opencensus.io/stats/view"
 	"google.golang.org/grpc"
-	"open-match.dev/open-match/internal/config"
-	"open-match.dev/open-match/internal/pb"
-	"open-match.dev/open-match/internal/rpc"
-	"open-match.dev/open-match/internal/statestore"
+	"open-match.dev/open-match/internal/appmain"
+	"open-match.dev/open-match/internal/telemetry"
+	"open-match.dev/open-match/pkg/pb"
 )
 
 var (
-	evaluatorLogger = logrus.WithFields(logrus.Fields{
-		"app":       "openmatch",
-		"component": "evaluator",
-	})
+	matchesPerEvaluateRequest  = stats.Int64("open-match.dev/evaluator/matches_per_request", "Number of matches sent to the evaluator per request", stats.UnitDimensionless)
+	matchesPerEvaluateResponse = stats.Int64("open-match.dev/evaluator/matches_per_response", "Number of matches returned by the evaluator per response", stats.UnitDimensionless)
+
+	matchesPerEvaluateRequestView = &view.View{
+		Measure:     matchesPerEvaluateRequest,
+		Name:        "open-match.dev/evaluator/matches_per_request",
+		Description: "Number of matches sent to the evaluator per request",
+		Aggregation: telemetry.DefaultCountDistribution,
+	}
+	matchesPerEvaluateResponseView = &view.View{
+		Measure:     matchesPerEvaluateResponse,
+		Name:        "open-match.dev/evaluator/matches_per_response",
+		Description: "Number of matches sent to the evaluator per response",
+		Aggregation: telemetry.DefaultCountDistribution,
+	}
 )
 
-// FunctionSettings is a collection of parameters used to define the evaluator service.
-type FunctionSettings struct {
-	Func evaluatorFunction
-}
-
-// RunApplication creates a server.
-func RunApplication(settings *FunctionSettings) {
-	cfg, err := config.Read()
-	if err != nil {
-		evaluatorLogger.WithFields(logrus.Fields{
-			"error": err.Error(),
-		}).Fatalf("cannot read configuration.")
+// BindServiceFor creates the evaluator service and binds it to the serving harness.
+func BindServiceFor(eval Evaluator) appmain.Bind {
+	return func(p *appmain.Params, b *appmain.Bindings) error {
+		b.AddHandleFunc(func(s *grpc.Server) {
+			pb.RegisterEvaluatorServer(s, &evaluatorService{eval})
+		}, pb.RegisterEvaluatorHandlerFromEndpoint)
+		b.RegisterViews(
+			matchesPerEvaluateRequestView,
+			matchesPerEvaluateResponseView,
+		)
+		return nil
 	}
-
-	p, err := rpc.NewServerParamsFromConfig(cfg, "api.evaluator")
-	if err != nil {
-		evaluatorLogger.WithFields(logrus.Fields{
-			"error": err.Error(),
-		}).Fatalf("cannot construct server.")
-	}
-
-	if err := BindService(p, cfg, settings); err != nil {
-		evaluatorLogger.WithFields(logrus.Fields{
-			"error": err.Error(),
-		}).Fatalf("failed to bind evaluator service.")
-	}
-
-	rpc.MustServeForever(p)
-}
-
-// BindService creates the evaluator service and binds it to the serving harness.
-func BindService(p *rpc.ServerParams, cfg config.View, fs *FunctionSettings) error {
-	service := &evaluatorService{
-		cfg:      cfg,
-		store:    statestore.New(cfg),
-		function: fs.Func,
-	}
-
-	p.AddHealthCheckFunc(service.store.HealthCheck)
-
-	p.AddHandleFunc(func(s *grpc.Server) {
-		pb.RegisterEvaluatorServer(s, service)
-	}, pb.RegisterEvaluatorHandlerFromEndpoint)
-
-	return nil
 }

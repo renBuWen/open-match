@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+.git
+
 # Binaries for programs and plugins
 *.exe
 *.exe~
 *.dll
+*.nupkg
 *.so
 *.dylib
 
@@ -29,10 +32,6 @@
 *swp
 *swo
 *~
-
-# Load testing residuals
-test/stress/*.csv
-test/stress/__pycache__
 
 # Ping data files
 *.ping
@@ -49,6 +48,8 @@ detritus/
 
 # Dotnet Core ignores
 *.swp
+*.pdb
+*.deps.json
 *.*~
 project.lock.json
 .DS_Store
@@ -79,6 +80,9 @@ bld/
 msbuild.log
 msbuild.err
 msbuild.wrn
+csharp/OpenMatch/obj
+Chart.lock
+
 
 # Visual Studio 2015
 .vs/
@@ -101,18 +105,33 @@ install/yaml/
 # Temp Directories
 tmp/
 
+# Terraform context
+.terraform
+*.tfstate
+*.tfstate.backup
+
+# Credential Files
+creds.json
+
 # Open Match Binaries
 cmd/backend/backend
 cmd/frontend/frontend
-cmd/mmlogic/mmlogic
-cmd/evaluator/evaluator
+cmd/query/query
+cmd/synchronizer/synchronizer
 cmd/minimatch/minimatch
 cmd/swaggerui/swaggerui
 tools/certgen/certgen
+examples/demo/demo
 examples/functions/golang/soloduel/soloduel
+test/evaluator/evaluator
+test/matchfunction/matchfunction
+tools/reaper/reaper
 
 # Open Match Build Directory
 build/
 
 # Secrets Directories
 install/helm/open-match/secrets/
+
+# Helm tar charts
+install/helm/open-match/charts/

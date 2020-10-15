@@ -17,14 +17,18 @@ package frontend
 import (
 	"context"
 
-	"github.com/gogo/protobuf/proto"
+	"github.com/golang/protobuf/proto"
+	"github.com/golang/protobuf/ptypes"
+	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/rs/xid"
 	"github.com/sirupsen/logrus"
+	"go.opencensus.io/stats"
+	"go.opencensus.io/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"open-match.dev/open-match/internal/config"
-	"open-match.dev/open-match/internal/pb"
 	"open-match.dev/open-match/internal/statestore"
+	"open-match.dev/open-match/pkg/pb"
 )
 
 // frontendService implements the Frontend service that is used to create
@@ -37,133 +41,142 @@ type frontendService struct {
 var (
 	logger = logrus.WithFields(logrus.Fields{
 		"app":       "openmatch",
-		"component": "app.frontend.frontend_service",
+		"component": "app.frontend",
 	})
 )
 
-// CreateTicket will create a new ticket, assign an id to it and put it in state
-// storage. It will index the Ticket attributes based on the indexing configuration.
-// Indexing a Ticket adds the it to the pool of Tickets considered for matchmaking.
-func (s *frontendService) CreateTicket(ctx context.Context, req *pb.CreateTicketRequest) (*pb.CreateTicketResponse, error) {
+// CreateTicket assigns an unique TicketId to the input Ticket and record it in state storage.
+// A ticket is considered as ready for matchmaking once it is created.
+//   - If a TicketId exists in a Ticket request, an auto-generated TicketId will override this field.
+//   - If SearchFields exist in a Ticket, CreateTicket will also index these fields such that one can query the ticket with query.QueryTickets function.
+func (s *frontendService) CreateTicket(ctx context.Context, req *pb.CreateTicketRequest) (*pb.Ticket, error) {
 	// Perform input validation.
 	if req.Ticket == nil {
-		logger.Error("invalid argument - ticket cannot be nil")
-		return nil, status.Errorf(codes.InvalidArgument, "ticket cannot be nil")
+		return nil, status.Errorf(codes.InvalidArgument, ".ticket is required")
+	}
+	if req.Ticket.Assignment != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "tickets cannot be created with an assignment")
+	}
+	if req.Ticket.CreateTime != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "tickets cannot be created with create time set")
 	}
 
+	return doCreateTicket(ctx, req, s.store)
+}
+
+func doCreateTicket(ctx context.Context, req *pb.CreateTicketRequest, store statestore.Service) (*pb.Ticket, error) {
 	// Generate a ticket id and create a Ticket in state storage
 	ticket, ok := proto.Clone(req.Ticket).(*pb.Ticket)
 	if !ok {
-		logger.Error("failed to clone input ticket proto")
-		return nil, status.Error(codes.Internal, "failed processing input")
+		return nil, status.Error(codes.Internal, "failed to clone input ticket proto")
 	}
 
 	ticket.Id = xid.New().String()
-	err := s.store.CreateTicket(ctx, ticket)
+	ticket.CreateTime = ptypes.TimestampNow()
+
+	sfCount := 0
+	sfCount += len(ticket.GetSearchFields().GetDoubleArgs())
+	sfCount += len(ticket.GetSearchFields().GetStringArgs())
+	sfCount += len(ticket.GetSearchFields().GetTags())
+	stats.Record(ctx, searchFieldsPerTicket.M(int64(sfCount)))
+	stats.Record(ctx, totalBytesPerTicket.M(int64(proto.Size(ticket))))
+
+	err := store.CreateTicket(ctx, ticket)
 	if err != nil {
-		logger.WithFields(logrus.Fields{
-			"error":  err.Error(),
-			"ticket": ticket,
-		}).Error("failed to create the ticket")
 		return nil, err
 	}
 
-	err = s.store.IndexTicket(ctx, ticket)
+	err = store.IndexTicket(ctx, ticket)
 	if err != nil {
-		logger.WithFields(logrus.Fields{
-			"error":  err.Error(),
-			"ticket": ticket,
-		}).Error("failed to index the ticket")
-		return nil, err
-	}
-
-	return &pb.CreateTicketResponse{Ticket: ticket}, nil
-}
-
-// DeleteTicket removes the Ticket from the configured indexes, thereby removing
-// it from matchmaking pool. It also lazily removes the ticket from state storage.
-func (s *frontendService) DeleteTicket(ctx context.Context, req *pb.DeleteTicketRequest) (*pb.DeleteTicketResponse, error) {
-	// Deindex this Ticket to remove it from matchmaking pool.
-	err := s.store.DeindexTicket(ctx, req.TicketId)
-	if err != nil {
-		logger.WithFields(logrus.Fields{
-			"error": err.Error(),
-			"id":    req.TicketId,
-		}).Error("failed to deindex the ticket")
-		return nil, err
-	}
-
-	// Kick off delete but don't wait for it to complete.
-	go s.deleteTicket(req.TicketId)
-	return &pb.DeleteTicketResponse{}, nil
-}
-
-// deleteTicket is a 'lazy' ticket delete that should be called after a ticket
-// has been deindexed.
-func (s *frontendService) deleteTicket(id string) {
-	err := s.store.DeleteTicket(context.Background(), id)
-	if err != nil {
-		logger.WithFields(logrus.Fields{
-			"error": err.Error(),
-			"id":    id,
-		}).Error("failed to delete the ticket")
-		return
-	}
-
-	// TODO: If other redis queues are implemented or we have custom index fields
-	// created by Open Match, those need to be cleaned up here.
-}
-
-// GetTicket returns the Ticket associated with the specified Ticket id.
-func (s *frontendService) GetTicket(ctx context.Context, req *pb.GetTicketRequest) (*pb.Ticket, error) {
-	ticket, err := s.store.GetTicket(ctx, req.TicketId)
-	if err != nil {
-		logger.WithFields(logrus.Fields{
-			"error": err.Error(),
-			"id":    req.TicketId,
-		}).Error("failed to get the ticket")
 		return nil, err
 	}
 
 	return ticket, nil
 }
 
-// GetTicketUpdates streams matchmaking results from Open Match for the
-// provided Ticket id.
-func (s *frontendService) GetAssignments(req *pb.GetAssignmentsRequest, stream pb.Frontend_GetAssignmentsServer) error {
+// DeleteTicket immediately stops Open Match from using the Ticket for matchmaking and removes the Ticket from state storage.
+// The client must delete the Ticket when finished matchmaking with it.
+//   - If SearchFields exist in a Ticket, DeleteTicket will deindex the fields lazily.
+// Users may still be able to assign/get a ticket after calling DeleteTicket on it.
+func (s *frontendService) DeleteTicket(ctx context.Context, req *pb.DeleteTicketRequest) (*empty.Empty, error) {
+	err := doDeleteTicket(ctx, req.GetTicketId(), s.store)
+	if err != nil {
+		return nil, err
+	}
+	return &empty.Empty{}, nil
+}
+
+func doDeleteTicket(ctx context.Context, id string, store statestore.Service) error {
+	// Deindex this Ticket to remove it from matchmaking pool.
+	err := store.DeindexTicket(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	//'lazy' ticket delete that should be called after a ticket
+	// has been deindexed.
+	go func() {
+		ctx, span := trace.StartSpan(context.Background(), "open-match/frontend.DeleteTicketLazy")
+		defer span.End()
+		err := store.DeleteTicket(ctx, id)
+		if err != nil {
+			logger.WithFields(logrus.Fields{
+				"error": err.Error(),
+				"id":    id,
+			}).Error("failed to delete the ticket")
+		}
+		err = store.DeleteTicketsFromPendingRelease(ctx, []string{id})
+		if err != nil {
+			logger.WithFields(logrus.Fields{
+				"error": err.Error(),
+				"id":    id,
+			}).Error("failed to delete the ticket from pendingRelease")
+		}
+		// TODO: If other redis queues are implemented or we have custom index fields
+		// created by Open Match, those need to be cleaned up here.
+	}()
+	return nil
+}
+
+// GetTicket get the Ticket associated with the specified TicketId.
+func (s *frontendService) GetTicket(ctx context.Context, req *pb.GetTicketRequest) (*pb.Ticket, error) {
+	return s.store.GetTicket(ctx, req.GetTicketId())
+}
+
+// WatchAssignments stream back Assignment of the specified TicketId if it is updated.
+//   - If the Assignment is not updated, GetAssignment will retry using the configured backoff strategy.
+func (s *frontendService) WatchAssignments(req *pb.WatchAssignmentsRequest, stream pb.FrontendService_WatchAssignmentsServer) error {
 	ctx := stream.Context()
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
+			return ctx.Err()
 		default:
-			var currAssignment *pb.Assignment
-			callback := func(assignment *pb.Assignment) error {
-				if currAssignment == nil ||
-					currAssignment.Connection != assignment.Connection ||
-					currAssignment.Properties != assignment.Properties ||
-					currAssignment.Error != assignment.Error {
-					currAssignment, ok := proto.Clone(assignment).(*pb.Assignment)
-					if !ok {
-						logger.Error("failed to cast assignment object")
-						return status.Error(codes.Internal, "failed to cast the assignment object")
-					}
-
-					err := stream.Send(&pb.GetAssignmentsResponse{Assignment: currAssignment})
-					if err != nil {
-						logger.WithError(err).Error("failed to send Redis response to grpc server")
-						return status.Errorf(codes.Aborted, err.Error())
-					}
-				}
-				return nil
+			sender := func(assignment *pb.Assignment) error {
+				return stream.Send(&pb.WatchAssignmentsResponse{Assignment: assignment})
 			}
-
-			err := s.store.GetAssignments(ctx, req.TicketId, callback)
-			if err != nil {
-				return err
-			}
-
-			return nil
+			return doWatchAssignments(ctx, req.GetTicketId(), sender, s.store)
 		}
 	}
+}
+
+func doWatchAssignments(ctx context.Context, id string, sender func(*pb.Assignment) error, store statestore.Service) error {
+	var currAssignment *pb.Assignment
+	var ok bool
+	callback := func(assignment *pb.Assignment) error {
+		if (currAssignment == nil && assignment != nil) || !proto.Equal(currAssignment, assignment) {
+			currAssignment, ok = proto.Clone(assignment).(*pb.Assignment)
+			if !ok {
+				return status.Error(codes.Internal, "failed to cast the assignment object")
+			}
+
+			err := sender(currAssignment)
+			if err != nil {
+				return status.Errorf(codes.Aborted, err.Error())
+			}
+		}
+		return nil
+	}
+
+	return store.GetAssignments(ctx, id, callback)
 }

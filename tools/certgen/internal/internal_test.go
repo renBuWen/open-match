@@ -18,13 +18,14 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -32,13 +33,13 @@ const (
 )
 
 func TestCreateCertificate(t *testing.T) {
-	assert := assert.New(t)
+	require := require.New(t)
 
 	tmpDir, err := ioutil.TempDir("", "certtest")
 	defer func() {
-		assert.Nil(os.RemoveAll(tmpDir))
+		require.Nil(os.RemoveAll(tmpDir))
 	}()
-	assert.Nil(err)
+	require.Nil(err)
 	publicCertPath := filepath.Join(tmpDir, "public.cert")
 	privateKeyPath := filepath.Join(tmpDir, "private.key")
 	err = CreateCertificateAndPrivateKeyFiles(
@@ -49,31 +50,31 @@ func TestCreateCertificate(t *testing.T) {
 			Hostnames:        []string{"a.com", "b.com", "127.0.0.1"},
 			RSAKeyLength:     2048,
 		})
-	assert.Nil(err)
+	require.Nil(err)
 
-	assert.FileExists(publicCertPath)
-	assert.FileExists(privateKeyPath)
+	require.FileExists(publicCertPath)
+	require.FileExists(privateKeyPath)
 
 	publicCertFileData, err := ioutil.ReadFile(publicCertPath)
-	assert.Nil(err)
+	require.Nil(err)
 	privateKeyFileData, err := ioutil.ReadFile(privateKeyPath)
-	assert.Nil(err)
+	require.Nil(err)
 
 	// Verify that we can load the public/private key pair.
 	pub, pk, err := ReadKeyPair(publicCertFileData, privateKeyFileData)
-	assert.Nil(err)
-	assert.NotNil(pub)
-	assert.NotNil(pk)
+	require.Nil(err)
+	require.NotNil(pub)
+	require.NotNil(pk)
 
 	// Verify that the public/private key pair can RSA encrypt/decrypt.
 	pubKey, ok := pub.PublicKey.(*rsa.PublicKey)
-	assert.True(ok, "pub.PublicKey is not of type, *rsa.PublicKey, %v", pub.PublicKey)
+	require.True(ok, "pub.PublicKey is not of type, *rsa.PublicKey, %v", pub.PublicKey)
 	ciphertext, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, pubKey, []byte(secretMessage), []byte{})
-	assert.Nil(err)
-	assert.NotEqual(string(ciphertext), secretMessage)
+	require.Nil(err)
+	require.NotEqual(string(ciphertext), secretMessage)
 	cleartext, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, pk, ciphertext, []byte{})
-	assert.Nil(err)
-	assert.Equal(string(cleartext), string(secretMessage))
+	require.Nil(err)
+	require.Equal(string(cleartext), string(secretMessage))
 }
 
 func TestBadValues(t *testing.T) {
@@ -95,6 +96,7 @@ func TestBadValues(t *testing.T) {
 		{"validity duration is required, otherwise the certificate would immediately expire", "pub.cert", "priv.key", &Params{Hostnames: []string{"127.0.0.1"}, RSAKeyLength: 2048}},
 	}
 	for _, testCase := range testCases {
+		testCase := testCase
 		t.Run(testCase.errorString, func(t *testing.T) {
 			err := CreateCertificateAndPrivateKeyFiles(
 				testCase.pub,
@@ -107,5 +109,31 @@ func TestBadValues(t *testing.T) {
 			}
 		})
 	}
+}
 
+func TestExpandHostnames(t *testing.T) {
+	testCases := []struct {
+		input    []string
+		expected []string
+	}{
+		{
+			[]string{},
+			[]string{},
+		},
+		{
+			[]string{"hello"},
+			[]string{"hello"},
+		},
+		{
+			[]string{"hello:1234"},
+			[]string{"hello:1234", "hello"},
+		},
+	}
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(fmt.Sprintf("expandHostnames(%s) => %s", testCase.input, testCase.expected), func(t *testing.T) {
+			actual := expandHostnames(testCase.input)
+			require.Equal(t, testCase.expected, actual)
+		})
+	}
 }

@@ -18,7 +18,8 @@ import (
 	"context"
 
 	"open-match.dev/open-match/internal/config"
-	"open-match.dev/open-match/internal/pb"
+	"open-match.dev/open-match/internal/telemetry"
+	"open-match.dev/open-match/pkg/pb"
 )
 
 // Service is a generic interface for talking to a storage backend.
@@ -26,7 +27,7 @@ type Service interface {
 	// HealthCheck indicates if the database is reachable.
 	HealthCheck(ctx context.Context) error
 
-	// CreateTicket creates a new Ticket in the state storage. This method fails if the Ticket already exists.
+	// CreateTicket creates a new Ticket in the state storage. If the id already exists, it will be overwritten.
 	CreateTicket(ctx context.Context, ticket *pb.Ticket) error
 
 	// GetTicket gets the Ticket with the specified id from state storage. This method fails if the Ticket does not exist.
@@ -35,20 +36,32 @@ type Service interface {
 	// DeleteTicket removes the Ticket with the specified id from state storage. This method succeeds if the Ticket does not exist.
 	DeleteTicket(ctx context.Context, id string) error
 
-	// IndexTicket indexes the Ticket id for the configured index fields.
+	// IndexTicket adds the ticket to the index.
 	IndexTicket(ctx context.Context, ticket *pb.Ticket) error
 
-	// DeindexTicket removes the indexing for the specified Ticket. Only the indexes are removed but the Ticket continues to exist.
+	// DeindexTicket removes specified ticket from the index. The Ticket continues to exist.
 	DeindexTicket(ctx context.Context, id string) error
 
-	// FilterTickets returns the Ticket ids for the Tickets meeting the specified filtering criteria.
-	FilterTickets(ctx context.Context, filters []*pb.Filter, pageSize int, callback func([]*pb.Ticket) error) error
+	// GetIndexedIDSet returns the ids of all tickets currently indexed.
+	GetIndexedIDSet(ctx context.Context) (map[string]struct{}, error)
 
-	// UpdateAssignments update the match assignments for the input ticket ids
-	UpdateAssignments(ctx context.Context, ids []string, assignment *pb.Assignment) error
+	// GetTickets returns multiple tickets from storage.  Missing tickets are
+	// silently ignored.
+	GetTickets(ctx context.Context, ids []string) ([]*pb.Ticket, error)
+
+	// UpdateAssignments update using the request's specified tickets with assignments.
+	UpdateAssignments(ctx context.Context, req *pb.AssignTicketsRequest) (*pb.AssignTicketsResponse, []*pb.Ticket, error)
 
 	// GetAssignments returns the assignment associated with the input ticket id
 	GetAssignments(ctx context.Context, id string, callback func(*pb.Assignment) error) error
+
+	AddTicketsToPendingRelease(ctx context.Context, ids []string) error
+
+	// DeleteTicketsFromPendingRelease deletes tickets from the proposed sorted set
+	DeleteTicketsFromPendingRelease(ctx context.Context, ids []string) error
+
+	// ReleaseAllTickets releases all pending tickets back to active
+	ReleaseAllTickets(ctx context.Context) error
 
 	// Closes the connection to the underlying storage.
 	Close() error
@@ -56,5 +69,11 @@ type Service interface {
 
 // New creates a Service based on the configuration.
 func New(cfg config.View) Service {
-	return newRedis(cfg)
+	s := newRedis(cfg)
+	if cfg.GetBool(telemetry.ConfigNameEnableMetrics) {
+		return &instrumentedService{
+			s: s,
+		}
+	}
+	return s
 }

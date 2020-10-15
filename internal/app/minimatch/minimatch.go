@@ -15,56 +15,28 @@
 package minimatch
 
 import (
-	"github.com/sirupsen/logrus"
 	"open-match.dev/open-match/internal/app/backend"
 	"open-match.dev/open-match/internal/app/frontend"
-	"open-match.dev/open-match/internal/app/mmlogic"
-	"open-match.dev/open-match/internal/config"
-	"open-match.dev/open-match/internal/rpc"
+	"open-match.dev/open-match/internal/app/query"
+	"open-match.dev/open-match/internal/app/synchronizer"
+	"open-match.dev/open-match/internal/appmain"
 )
-
-var (
-	minimatchLogger = logrus.WithFields(logrus.Fields{
-		"app":       "openmatch",
-		"component": "minimatch",
-	})
-)
-
-// RunApplication creates a server.
-func RunApplication() {
-	cfg, err := config.Read()
-	if err != nil {
-		minimatchLogger.WithFields(logrus.Fields{
-			"error": err.Error(),
-		}).Fatalf("cannot read configuration.")
-	}
-	p, err := rpc.NewServerParamsFromConfig(cfg, "api.frontend")
-	if err != nil {
-		minimatchLogger.WithFields(logrus.Fields{
-			"error": err.Error(),
-		}).Fatalf("cannot construct server.")
-	}
-
-	if err := BindService(p, cfg); err != nil {
-		minimatchLogger.WithFields(logrus.Fields{
-			"error": err.Error(),
-		}).Fatalf("cannot bind server.")
-	}
-
-	rpc.MustServeForever(p)
-}
 
 // BindService creates the minimatch service to the server Params.
-func BindService(p *rpc.ServerParams, cfg config.View) error {
-	if err := backend.BindService(p, cfg); err != nil {
+func BindService(p *appmain.Params, b *appmain.Bindings) error {
+	if err := backend.BindService(p, b); err != nil {
 		return err
 	}
 
-	if err := frontend.BindService(p, cfg); err != nil {
+	if err := frontend.BindService(p, b); err != nil {
 		return err
 	}
 
-	if err := mmlogic.BindService(p, cfg); err != nil {
+	if err := query.BindService(p, b); err != nil {
+		return err
+	}
+
+	if err := synchronizer.BindService(p, b); err != nil {
 		return err
 	}
 

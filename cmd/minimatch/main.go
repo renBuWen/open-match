@@ -17,8 +17,9 @@ package main
 
 import (
 	"open-match.dev/open-match/internal/app/minimatch"
+	"open-match.dev/open-match/internal/appmain"
 )
 
 func main() {
-	minimatch.RunApplication()
+	appmain.RunApplication("minimatch", minimatch.BindService)
 }

@@ -13,12 +13,14 @@
 // limitations under the License.
 
 syntax = "proto3";
-package api;
-option go_package = "internal/pb";
+package openmatch;
+option go_package = "open-match.dev/open-match/pkg/pb";
+option csharp_namespace = "OpenMatch";
 
 import "api/messages.proto";
 import "google/api/annotations.proto";
 import "protoc-gen-swagger/options/annotations.proto";
+import "google/protobuf/empty.proto";
 
 option (grpc.gateway.protoc_gen_swagger.options.openapiv2_swagger) = {
   info: {
@@ -55,74 +57,64 @@ option (grpc.gateway.protoc_gen_swagger.options.openapiv2_swagger) = {
 };
 
 message CreateTicketRequest {
-  // Ticket object with the properties of the Ticket to be created.
-  Ticket ticket = 1;
-}
-
-message CreateTicketResponse {
-  // Ticket object for the created Ticket - with the ticket ID populated.
+  // A Ticket object with SearchFields defined.
   Ticket ticket = 1;
 }
 
 message DeleteTicketRequest {
-  // Ticket ID of the Ticket to be deleted.
+  // A TicketId of a generated Ticket to be deleted.
   string ticket_id = 1;
 }
-
-message DeleteTicketResponse {}
 
 message GetTicketRequest {
-  // Ticket ID of the Ticket to fetch.
+  // A TicketId of a generated Ticket.
   string ticket_id = 1;
 }
 
-message GetAssignmentsRequest {
-  // Ticket ID of the Ticket to get updates on.
+message WatchAssignmentsRequest {
+  // A TicketId of a generated Ticket to get updates on.
   string ticket_id = 1;
 }
 
-message GetAssignmentsResponse {
-  // The updated Ticket object.
+message WatchAssignmentsResponse {
+  // An updated Assignment of the requested Ticket.
   Assignment assignment = 1;
 }
 
-// The Frontend service enables creating Tickets for matchmaking and fetching
-// the status of these Tickets.
-service Frontend {
-  // CreateTicket will create a new ticket, assign a Ticket ID to it and put the
-  // Ticket in state storage. It will then look through the 'properties' field
-  // for the attributes defined as indices the matchmakaking config. If the
-  // attributes exist and are valid integers, they will be indexed. Creating a
-  // ticket adds the Ticket to the pool of Tickets considered for matchmaking.
-  rpc CreateTicket(CreateTicketRequest) returns (CreateTicketResponse) {
+// The FrontendService implements APIs to manage and query status of a Tickets.
+service FrontendService {
+  // CreateTicket assigns an unique TicketId to the input Ticket and record it in state storage.
+  // A ticket is considered as ready for matchmaking once it is created.
+  //   - If a TicketId exists in a Ticket request, an auto-generated TicketId will override this field.
+  //   - If SearchFields exist in a Ticket, CreateTicket will also index these fields such that one can query the ticket with query.QueryTickets function.
+  rpc CreateTicket(CreateTicketRequest) returns (Ticket) {
     option (google.api.http) = {
-      post: "/v1/frontend/tickets"
+      post: "/v1/frontendservice/tickets"
       body: "*"
     };
   }
 
-  // DeleteTicket removes the Ticket from state storage and from corresponding
-  // configured indices. Deleting the ticket stops the ticket from being
-  // considered for future matchmaking requests.
-  rpc DeleteTicket(DeleteTicketRequest) returns (DeleteTicketResponse) {
+  // DeleteTicket immediately stops Open Match from using the Ticket for matchmaking and removes the Ticket from state storage.
+  // The client should delete the Ticket when finished matchmaking with it. 
+  rpc DeleteTicket(DeleteTicketRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = {
-      delete: "/v1/frontend/tickets/{ticket_id}"
+      delete: "/v1/frontendservice/tickets/{ticket_id}"
     };
   }
 
-  // GetTicket fetches the ticket associated with the specified Ticket ID.
+  // GetTicket get the Ticket associated with the specified TicketId.
   rpc GetTicket(GetTicketRequest) returns (Ticket) {
     option (google.api.http) = {
-      get: "/v1/frontend/tickets/{ticket_id}"
+      get: "/v1/frontendservice/tickets/{ticket_id}"
     };
   }
 
-  // GetAssignments streams matchmaking results from Open Match for the
-  // provided Ticket ID.
-  rpc GetAssignments(GetAssignmentsRequest)
-      returns (stream GetAssignmentsResponse) {
+  // WatchAssignments stream back Assignment of the specified TicketId if it is updated.
+  //   - If the Assignment is not updated, GetAssignment will retry using the configured backoff strategy. 
+  rpc WatchAssignments(WatchAssignmentsRequest)
+      returns (stream WatchAssignmentsResponse) {
     option (google.api.http) = {
-      get: "/v1/frontend/tickets/{ticket_id}/assignments"
+      get: "/v1/frontendservice/tickets/{ticket_id}/assignments"
     };
   }
 }

@@ -12,57 +12,67 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-{{- if .Values.openmatch.swaggerui.install }}
+{{- if index .Values "open-match-core" "swaggerui" "enabled" }}
 kind: Service
 apiVersion: v1
 metadata:
-  name: om-swaggerui
+  name: {{ include "openmatch.swaggerui.hostName" . }}
   namespace: {{ .Release.Namespace }}
+  annotations: {{- include "openmatch.chartmeta" . | nindent 4 }}
   labels:
     app: {{ template "openmatch.name" . }}
-    {{- include "openmatch.chartmeta" (set . "indent" 4) }}
+    component: swaggerui
+    release: {{ .Release.Name }}
 spec:
   selector:
     app: {{ template "openmatch.name" . }}
     component: swaggerui
+  type: {{ coalesce .Values.global.kubernetes.service.portType .Values.swaggerui.portType }}
   ports:
   - name: http
     protocol: TCP
-    port: {{ .Values.openmatch.swaggerui.http.port }}
+    port: {{ .Values.swaggerui.httpPort }}
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: om-swaggerui
+  name: {{ include "openmatch.swaggerui.hostName" . }}
   namespace: {{ .Release.Namespace }}
+  annotations: {{- include "openmatch.chartmeta" . | nindent 4 }}
   labels:
     app: {{ template "openmatch.name" . }}
     component: swaggerui
-    {{- include "openmatch.chartmeta" (set . "indent" 4) }}
+    release: {{ .Release.Name }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.swaggerui.replicas }}
   selector:
     matchLabels:
       app: {{ template "openmatch.name" . }}
       component: swaggerui
-      {{- include "openmatch.chartmeta" (set . "indent" 6) }}
   template:
     metadata:
       namespace: {{ .Release.Namespace }}
+      annotations:
+        {{- include "openmatch.chartmeta" . | nindent 8 }}
       labels:
         app: {{ template "openmatch.name" . }}
         component: swaggerui
-        {{- include "openmatch.chartmeta" (set . "indent" 8) }}
+        release: {{ .Release.Name }}
     spec:
+      {{- include "openmatch.labels.nodegrouping" . | nindent 6 }}
+      volumes:
+        {{- include "openmatch.volumes.configs" (. | merge (dict "configs" .Values.configs)) | nindent 8}}
+        {{- include "openmatch.volumes.tls" . | nindent 8}}
+      serviceAccountName: {{ include "openmatch.serviceAccount.name" . }}
       containers:
-      - name: om-swaggerui
-        image: "{{ .Values.openmatch.image.registry }}/{{ .Values.openmatch.image.swaggerui.name}}:{{ .Values.openmatch.image.tag }}"
-        imagePullPolicy: {{ .Values.openmatch.image.swaggerui.pullPolicy }}
+      - name: {{ include "openmatch.swaggerui.hostName" . }}
+        volumeMounts:
+          {{- include "openmatch.volumemounts.configs" (dict "configs" .Values.configs) | nindent 10 }}
+          {{- include "openmatch.volumemounts.tls" . | nindent 10 }}
+        image: "{{ .Values.global.image.registry }}/{{ .Values.swaggerui.image}}:{{ .Values.global.image.tag }}"
         ports:
         - name: http
-          containerPort: {{ .Values.openmatch.swaggerui.http.port }}
-        resources:
-          requests:
-            memory: 100Mi
-            cpu: 100m
+          containerPort: {{ .Values.swaggerui.httpPort }}
+        {{- include "openmatch.container.common" . | nindent 8 }}
+        {{- include "kubernetes.probe" (dict "port" .Values.swaggerui.httpPort) | nindent 8 }}
 {{- end }}

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package main a sample match function that uses the GRPC harness to set up
+// Package main defines a sample match function that uses the GRPC harness to set up
 // the match making function as a service. This sample is a reference
 // to demonstrate the usage of the GRPC harness and should only be used as
 // a starting point for your match function. You will need to modify the
@@ -20,15 +20,14 @@
 package main
 
 import (
-	mmfHarness "open-match.dev/open-match/pkg/harness/golang"
+	"open-match.dev/open-match/examples/functions/golang/soloduel/mmf"
+)
+
+const (
+	queryServiceAddr = "open-match-query.open-match.svc.cluster.local:50503" // Address of the QueryService endpoint.
+	serverPort       = 50502                                                 // The port for hosting the Match Function.
 )
 
 func main() {
-	// Invoke the harness to setup a GRPC service that handles requests to run the
-	// match function. The harness itself queries open match for player pools for
-	// the specified request and passes the pools to the match function to generate
-	// proposals.
-	mmfHarness.RunMatchFunction(&mmfHarness.FunctionSettings{
-		Func: MakeMatches,
-	})
+	mmf.Start(queryServiceAddr, serverPort)
 }

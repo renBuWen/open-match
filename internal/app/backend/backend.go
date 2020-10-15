@@ -15,57 +15,81 @@
 package backend
 
 import (
-	"github.com/sirupsen/logrus"
+	"go.opencensus.io/stats"
+	"go.opencensus.io/stats/view"
 	"google.golang.org/grpc"
-	"open-match.dev/open-match/internal/config"
-	"open-match.dev/open-match/internal/pb"
+	"open-match.dev/open-match/internal/appmain"
 	"open-match.dev/open-match/internal/rpc"
 	"open-match.dev/open-match/internal/statestore"
+	"open-match.dev/open-match/internal/telemetry"
+	"open-match.dev/open-match/pkg/pb"
 )
 
 var (
-	backendLogger = logrus.WithFields(logrus.Fields{
-		"app":       "openmatch",
-		"component": "backend",
-	})
+	totalBytesPerMatch      = stats.Int64("open-match.dev/backend/total_bytes_per_match", "Total bytes per match", stats.UnitBytes)
+	ticketsPerMatch         = stats.Int64("open-match.dev/backend/tickets_per_match", "Number of tickets per match", stats.UnitDimensionless)
+	ticketsReleased         = stats.Int64("open-match.dev/backend/tickets_released", "Number of tickets released per request", stats.UnitDimensionless)
+	ticketsAssigned         = stats.Int64("open-match.dev/backend/tickets_assigned", "Number of tickets assigned per request", stats.UnitDimensionless)
+	ticketsTimeToAssignment = stats.Int64("open-match.dev/backend/ticket_time_to_assignment", "Time to assignment for tickets", stats.UnitMilliseconds)
+
+	totalMatchesView = &view.View{
+		Measure:     totalBytesPerMatch,
+		Name:        "open-match.dev/backend/total_matches",
+		Description: "Total number of matches",
+		Aggregation: view.Count(),
+	}
+	totalBytesPerMatchView = &view.View{
+		Measure:     totalBytesPerMatch,
+		Name:        "open-match.dev/backend/total_bytes_per_match",
+		Description: "Total bytes per match",
+		Aggregation: telemetry.DefaultBytesDistribution,
+	}
+	ticketsPerMatchView = &view.View{
+		Measure:     ticketsPerMatch,
+		Name:        "open-match.dev/backend/tickets_per_match",
+		Description: "Tickets per ticket",
+		Aggregation: telemetry.DefaultCountDistribution,
+	}
+	ticketsAssignedView = &view.View{
+		Measure:     ticketsAssigned,
+		Name:        "open-match.dev/backend/tickets_assigned",
+		Description: "Number of tickets assigned per request",
+		Aggregation: view.Sum(),
+	}
+	ticketsReleasedView = &view.View{
+		Measure:     ticketsReleased,
+		Name:        "open-match.dev/backend/tickets_released",
+		Description: "Number of tickets released per request",
+		Aggregation: view.Sum(),
+	}
+
+	ticketsTimeToAssignmentView = &view.View{
+		Measure:     ticketsTimeToAssignment,
+		Name:        "open-match.dev/backend/ticket_time_to_assignment",
+		Description: "Time to assignment for tickets",
+		Aggregation: telemetry.DefaultMillisecondsDistribution,
+	}
 )
 
-// RunApplication creates a server.
-func RunApplication() {
-	cfg, err := config.Read()
-	if err != nil {
-		backendLogger.WithFields(logrus.Fields{
-			"error": err.Error(),
-		}).Fatalf("cannot read configuration.")
-	}
-	p, err := rpc.NewServerParamsFromConfig(cfg, "api.backend")
-	if err != nil {
-		backendLogger.WithFields(logrus.Fields{
-			"error": err.Error(),
-		}).Fatalf("cannot construct server.")
-	}
-
-	if err := BindService(p, cfg); err != nil {
-		backendLogger.WithFields(logrus.Fields{
-			"error": err.Error(),
-		}).Fatalf("failed to bind backend service.")
-	}
-
-	rpc.MustServeForever(p)
-}
-
 // BindService creates the backend service and binds it to the serving harness.
-func BindService(p *rpc.ServerParams, cfg config.View) error {
+func BindService(p *appmain.Params, b *appmain.Bindings) error {
 	service := &backendService{
-		cfg:   cfg,
-		store: statestore.New(cfg),
+		synchronizer: newSynchronizerClient(p.Config()),
+		store:        statestore.New(p.Config()),
+		cc:           rpc.NewClientCache(p.Config()),
 	}
 
-	p.AddHealthCheckFunc(service.store.HealthCheck)
-
-	p.AddHandleFunc(func(s *grpc.Server) {
-		pb.RegisterBackendServer(s, service)
-	}, pb.RegisterBackendHandlerFromEndpoint)
-
+	b.AddHealthCheckFunc(service.store.HealthCheck)
+	b.AddHandleFunc(func(s *grpc.Server) {
+		pb.RegisterBackendServiceServer(s, service)
+	}, pb.RegisterBackendServiceHandlerFromEndpoint)
+	b.RegisterViews(
+		totalMatchesView,
+		totalBytesPerMatchView,
+		ticketsPerMatchView,
+		ticketsAssignedView,
+		ticketsReleasedView,
+		ticketsTimeToAssignmentView,
+	)
 	return nil
 }

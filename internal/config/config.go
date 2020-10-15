@@ -16,116 +16,57 @@
 package config
 
 import (
+	"fmt"
+	"log"
+
 	"github.com/fsnotify/fsnotify"
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
-	"go.opencensus.io/stats"
-	"go.opencensus.io/stats/view"
 )
 
-var (
-	// Logrus structured logging setup
-	logFields = logrus.Fields{
-		"app":       "openmatch",
-		"component": "config",
-	}
-	cfgLog = logrus.WithFields(logFields)
-
-	// Map of the config file keys to environment variable names populated by
-	// k8s into pods. Examples of redis-related env vars as written by k8s
-	// REDIS_SENTINEL_PORT_6379_TCP=tcp://10.55.253.195:6379
-	// REDIS_SENTINEL_PORT=tcp://10.55.253.195:6379
-	// REDIS_SENTINEL_PORT_6379_TCP_ADDR=10.55.253.195
-	// REDIS_SENTINEL_SERVICE_PORT=6379
-	// REDIS_SENTINEL_PORT_6379_TCP_PORT=6379
-	// REDIS_SENTINEL_PORT_6379_TCP_PROTO=tcp
-	// REDIS_SENTINEL_SERVICE_HOST=10.55.253.195
-	//
-	// MMFs are expected to get their configuation from env vars instead
-	// of reading the config file.  So, config parameters that are required
-	// by MMFs should be populated to env vars.
-	envMappings = map[string]string{
-		"redis.user":                    "REDIS_USER",
-		"redis.password":                "REDIS_PASSWORD",
-		"redis.hostname":                "REDIS_SERVICE_HOST",
-		"redis.port":                    "REDIS_SERVICE_PORT",
-		"redis.pool.maxIdle":            "REDIS_POOL_MAXIDLE",
-		"redis.pool.maxActive":          "REDIS_POOL_MAXACTIVE",
-		"redis.pool.idleTimeout":        "REDIS_POOL_IDLETIMEOUT",
-		"redis.pool.healthCheckTimeout": "REDIS_POOL_HEALTHCHECKTIMEOUT",
-		"api.mmlogic.hostname":          "OM_MMLOGICAPI_SERVICE_HOST",
-		"api.mmlogic.port":              "OM_MMLOGICAPI_SERVICE_PORT",
-	}
-
-	// OpenCensus
-	cfgVarCount = stats.Int64("config/vars_total", "Number of config vars read during initialization", "1")
-	// CfgVarCountView is the Open Census view for the cfgVarCount measure.
-	CfgVarCountView = &view.View{
-		Name:        "config/vars_total",
-		Measure:     cfgVarCount,
-		Description: "The number of config vars read during initialization",
-		Aggregation: view.Count(),
-	}
-)
-
-// Read reads a config file into a viper.Viper instance and associates environment vars defined in
-// config.envMappings
-func Read() (View, error) {
-	cfg := viper.New()
-	// Viper config management initialization
-	// Support either json or yaml file types (json for backwards compatibility
-	// with previous versions)
-	cfg.SetConfigType("json")
-	cfg.SetConfigType("yaml")
-	cfg.SetConfigName("matchmaker_config")
-	cfg.AddConfigPath(".")
-	cfg.AddConfigPath("config")
-
-	// Read in config file using Viper
-	err := cfg.ReadInConfig()
+// Read sets default to a viper instance and read user config to override these defaults.
+func Read() (*viper.Viper, error) {
+	var err error
+	// read configs from config/default/matchmaker_config_default.yaml
+	// matchmaker_config_default provides default values for all of the possible tunnable parameters in Open Match
+	dcfg := viper.New()
+	dcfg.SetConfigType("yaml")
+	dcfg.AddConfigPath(".")
+	// The config path needs to be the same as the volumeMount path defined via helm
+	dcfg.AddConfigPath("/app/config/default")
+	dcfg.SetConfigName("matchmaker_config_default")
+	err = dcfg.ReadInConfig()
 	if err != nil {
-		cfgLog.WithFields(logrus.Fields{
-			"error": err.Error(),
-		}).Fatal("Fatal error reading config file")
+		return nil, fmt.Errorf("fatal error reading default config file, desc: %s", err.Error())
 	}
 
-	// Bind this envvars to viper config vars.
-	// https://github.com/spf13/viper#working-with-environment-variables
-	// One important thing to recognize when working with ENV variables is
-	// that the value will be read each time it is accessed. Viper does not
-	// fix the value when the BindEnv is called.
-	for cfgKey, envVar := range envMappings {
-		err = cfg.BindEnv(cfgKey, envVar)
+	// read configs from config/override/matchmaker_config_default.yaml
+	// matchmaker_config_override overrides default values specified in matchmaker_config_default
+	cfg := viper.New()
 
-		if err != nil {
-			cfgLog.WithFields(logrus.Fields{
-				"configkey": cfgKey,
-				"envvar":    envVar,
-				"error":     err.Error(),
-				"module":    "config",
-			}).Warn("Unable to bind environment var as a config variable")
+	// set defaults for cfg using settings in dcfg
+	for k, v := range dcfg.AllSettings() {
+		cfg.SetDefault(k, v)
+	}
 
-		} else {
-			cfgLog.WithFields(logrus.Fields{
-				"configkey": cfgKey,
-				"envvar":    envVar,
-				"module":    "config",
-			}).Info("Binding environment var as a config variable")
-		}
+	cfg.SetConfigType("yaml")
+	cfg.AddConfigPath(".")
+	// The config path needs to be the same as the volumeMountPath defined via helm
+	cfg.AddConfigPath("/app/config/override")
+	cfg.SetConfigName("matchmaker_config_override")
+	err = cfg.ReadInConfig()
+	if err != nil {
+		return nil, fmt.Errorf("fatal error reading override config file, desc: %s", err.Error())
 	}
 
 	// Look for updates to the config; in Kubernetes, this is implemented using
-	// a ConfigMap that is written to the matchmaker_config.yaml file, which is
+	// a ConfigMap that is written to the matchmaker_config_override.yaml file, which is
 	// what the Open Match components using Viper monitor for changes.
 	// More details about Open Match's use of Kubernetes ConfigMaps at:
 	// https://open-match.dev/open-match/issues/42
 	cfg.WatchConfig() // Watch and re-read config file.
 	// Write a log when the configuration changes.
 	cfg.OnConfigChange(func(event fsnotify.Event) {
-		cfgLog.WithFields(logrus.Fields{
-			"filename":  event.Name,
-			"operation": event.Op,
-		}).Info("Server configuration changed.")
+		log.Printf("Server configuration changed, operation: %v, filename: %s", event.Op, event.Name)
 	})
-	return cfg, err
+	return cfg, nil
 }
